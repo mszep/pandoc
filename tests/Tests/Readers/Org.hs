@@ -126,6 +126,14 @@ tests =
                        , (emph "b") <> "."
                        ])
 
+      , "Quotes are forbidden border chars" =:
+          "/'nope/ *nope\"*" =?>
+          para ("/'nope/" <> space <> "*nope\"*")
+
+      , "Commata are forbidden border chars" =:
+          "/nada,/" =?>
+          para "/nada,/"
+
       , "Markup should work properly after a blank line" =:
         unlines ["foo", "", "/bar/"] =?>
         (para $ text "foo") <> (para $ emph $ text "bar")
@@ -188,6 +196,18 @@ tests =
       , "Self-link" =:
           "[[http://zeitlens.com/]]" =?>
           (para $ link "http://zeitlens.com/" "" "http://zeitlens.com/")
+
+      , "Absolute file link" =:
+          "[[/url][hi]]" =?>
+          (para $ link "file:///url" "" "hi")
+
+      , "Link to file in parent directory" =:
+          "[[../file.txt][moin]]" =?>
+          (para $ link "../file.txt" "" "moin")
+
+      , "Empty link (for gitit interop)" =:
+          "[[][New Link]]" =?>
+          (para $ link "" "" "New Link")
 
       , "Image link" =:
           "[[sunset.png][dusk.svg]]" =?>
@@ -267,6 +287,18 @@ tests =
       , "Unknown inline LaTeX command" =:
           "\\notacommand{foo}" =?>
           para (rawInline "latex" "\\notacommand{foo}")
+
+      , "MathML symbol in LaTeX-style" =:
+          "There is a hackerspace in Lübeck, Germany, called nbsp (unicode symbol: '\\nbsp')." =?>
+          para ("There is a hackerspace in Lübeck, Germany, called nbsp (unicode symbol: ' ').")
+
+      , "MathML symbol in LaTeX-style, including braces" =:
+          "\\Aacute{}stor" =?>
+          para "Ástor"
+
+      , "MathML copy sign" =:
+          "\\copy" =?>
+          para "©"
 
       , "LaTeX citation" =:
           "\\cite{Coffee}" =?>
@@ -450,6 +482,18 @@ tests =
                   , header 2 ("walk" <> space <> "dog")
                   ]
 
+      , "Comment Trees" =:
+          unlines [ "* COMMENT A comment tree"
+                  , "  Not much going on here"
+                  , "** This will be dropped"
+                  , "* Comment tree above"
+                  ] =?>
+          header 1 "Comment tree above"
+
+      , "Nothing but a COMMENT header" =:
+          "* COMMENT Test" =?>
+          (mempty::Blocks)
+
       , "Paragraph starting with an asterisk" =:
           "*five" =?>
           para "*five"
@@ -578,6 +622,13 @@ tests =
                      , plain "Item2"
                      ]
 
+      , "Unindented *" =:
+          ("- Item1\n" ++
+           "* Item2\n") =?>
+          bulletList [ plain "Item1"
+                     ] <>
+          header 1 "Item2"
+
       , "Multi-line Bullet Lists" =:
           ("- *Fat\n" ++
            "  Tony*\n" ++
@@ -621,6 +672,33 @@ tests =
                                     ]
                        ]
                      ]
+
+      , "Bullet List with Decreasing Indent" =:
+           ("  - Discovery\n\
+            \ - Human After All\n") =?>
+           mconcat [ bulletList [ plain "Discovery" ]
+                   , bulletList [ plain ("Human" <> space <> "After" <> space <> "All")]
+                   ]
+
+      , "Header follows Bullet List" =:
+          ("  - Discovery\n\
+           \  - Human After All\n\
+           \* Homework") =?>
+          mconcat [ bulletList [ plain "Discovery"
+                               , plain ("Human" <> space <> "After" <> space <> "All")
+                               ]
+                  , header 1 "Homework"
+                  ]
+
+      , "Bullet List Unindented with trailing Header" =:
+          ("- Discovery\n\
+           \- Homework\n\
+           \* NotValidListItem") =?>
+          mconcat [ bulletList [ plain "Discovery"
+                               , plain "Homework"
+                               ]
+                  , header 1 "NotValidListItem"
+                  ]
 
       , "Simple Ordered List" =:
           ("1. Item1\n" ++
@@ -716,6 +794,16 @@ tests =
           , ("DNA", [ plain $ spcSep [ "deoxyribonucleic", "acid" ] ])
           , ("PCR", [ plain $ spcSep [ "polymerase", "chain", "reaction" ] ])
           ]
+
+      , "Definition List With Trailing Header" =:
+          "- definition :: list\n\
+          \- cool :: defs\n\
+          \* header" =?>
+          mconcat [ definitionList [ ("definition", [plain "list"])
+                                   , ("cool", [plain "defs"])
+                                   ]
+                  , header 1 "header"
+                  ]
 
       , "Loose bullet list" =:
           unlines [ "- apple"

@@ -156,9 +156,9 @@ tests = [ testGroup "inlines"
             "docx/numbered_header.docx"
             "docx/numbered_header.native"
           , testCompare
-            "headers in other languages"
-            "docx/danish_headers.docx"
-            "docx/danish_headers.native"
+            "i18n blocks (headers and blockquotes)"
+            "docx/i18n_blocks.docx"
+            "docx/i18n_blocks.native"
           , testCompare
             "lists"
             "docx/lists.docx"

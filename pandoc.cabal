@@ -1,5 +1,5 @@
 Name:            pandoc
-Version:         1.13.1
+Version:         1.13.2
 Cabal-Version:   >= 1.10
 Build-Type:      Custom
 License:         GPL
@@ -16,14 +16,15 @@ Synopsis:        Conversion between markup formats
 Description:     Pandoc is a Haskell library for converting from one markup
                  format to another, and a command-line tool that uses
                  this library. It can read markdown and (subsets of) HTML,
-                 reStructuredText, LaTeX, DocBook, MediaWiki markup, Haddock
-                 markup, OPML, Emacs Org-Mode, txt2tags and Textile, and it can write
-                 markdown, reStructuredText, HTML, LaTeX, ConTeXt, Docbook,
-                 OPML, OpenDocument, ODT, Word docx, RTF, MediaWiki, DokuWiki,
-                 Textile, groff man pages, plain text, Emacs Org-Mode, AsciiDoc,
-                 Haddock markup, EPUB (v2 and v3), FictionBook2,
-                 InDesign ICML, and several kinds of HTML/javascript
-                 slide shows (S5, Slidy, Slideous, DZSlides, reveal.js).
+                 reStructuredText, LaTeX, DocBook, MediaWiki markup, TWiki
+                 markup, Haddock markup, OPML, Emacs Org-Mode, txt2tags and
+                 Textile, and it can write markdown, reStructuredText, XHTML,
+                 HTML 5, LaTeX, ConTeXt, DocBook, OPML, OpenDocument, ODT,
+                 Word docx, RTF, MediaWiki, DokuWiki, Textile, groff man
+                 pages, plain text, Emacs Org-Mode, AsciiDoc, Haddock markup,
+                 EPUB (v2 and v3), FictionBook2, InDesign ICML, and several
+                 kinds of HTML/javascript slide shows (S5, Slidy, Slideous,
+                 DZSlides, reveal.js).
                  .
                  Pandoc extends standard markdown syntax with footnotes,
                  embedded LaTeX, definition lists, tables, and other
@@ -182,6 +183,7 @@ Extra-Source-Files:
                  tests/epub/*.epub
                  tests/epub/*.native
                  tests/txt2tags.t2t
+                 tests/twiki-reader.twiki
 
 Source-repository head
   type:          git
@@ -289,6 +291,7 @@ Library
                    Text.Pandoc.Readers.Textile,
                    Text.Pandoc.Readers.Native,
                    Text.Pandoc.Readers.Haddock,
+                   Text.Pandoc.Readers.TWiki,
                    Text.Pandoc.Readers.Docx,
                    Text.Pandoc.Readers.EPUB,
                    Text.Pandoc.Writers.Native,

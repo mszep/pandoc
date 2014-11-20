@@ -35,7 +35,7 @@ import Data.Maybe ( fromMaybe )
 import Data.List ( isPrefixOf, isInfixOf, intercalate )
 import System.Environment ( getEnv )
 import Text.Printf (printf)
-import System.FilePath ( (</>), takeExtension, takeFileName )
+import System.FilePath ( takeExtension, takeFileName )
 import qualified Data.ByteString.Lazy as B
 import qualified Data.ByteString.Lazy.Char8 as B8
 import qualified Text.Pandoc.UTF8 as UTF8
@@ -64,7 +64,6 @@ import Text.XML.Light ( unode, Element(..), unqual, Attr(..), add_attrs
 import Text.Pandoc.UUID (getRandomUUID)
 import Text.Pandoc.Writers.HTML (writeHtmlString, writeHtml)
 import Data.Char ( toLower, isDigit, isAlphaNum )
-import Network.URI ( unEscapeString )
 import Text.Pandoc.MIME (MimeType, getMimeType)
 import qualified Control.Exception as E
 import Text.Blaze.Html.Renderer.Utf8 (renderHtml)
@@ -359,8 +358,9 @@ writeEPUB opts doc@(Pandoc meta _) = do
                      Nothing   -> return ([],[])
                      Just img  -> do
                        let coverImage = "media/" ++ takeFileName img
-                       let cpContent = renderHtml $ writeHtml opts'
-                               (Pandoc meta [RawBlock (Format "html") $ "<div id=\"cover-image\">\n<img src=\"" ++ coverImage ++ "\" alt=\"cover image\" />\n</div>"])
+                       let cpContent = renderHtml $ writeHtml
+                            opts'{ writerVariables = ("coverpage","true"):vars }
+                            (Pandoc meta [RawBlock (Format "html") $ "<div id=\"cover-image\">\n<img src=\"" ++ coverImage ++ "\" alt=\"cover image\" />\n</div>"])
                        imgContent <- B.readFile img
                        return ( [mkEntry "cover.xhtml" cpContent]
                               , [mkEntry coverImage imgContent] )
@@ -612,17 +612,14 @@ writeEPUB opts doc@(Pandoc meta _) = do
                                                  (_:_) -> [unode "ol" ! [("class","toc")] $ subs]
 
   let navtag = if epub3 then "nav" else "div"
-  let navData = UTF8.fromStringLazy $ ppTopElement $
-        unode "html" ! [("xmlns","http://www.w3.org/1999/xhtml")
-                       ,("xmlns:epub","http://www.idpf.org/2007/ops")] $
-          [ unode "head" $
-            [ unode "title" plainTitle
-            , unode "link" ! [("rel","stylesheet"),("type","text/css"),("href","stylesheet.css")] $ () ]
-          , unode "body" $
-              unode navtag ! [("epub:type","toc") | epub3] $
-                [ unode "h1" ! [("id","toc-title")] $ plainTitle
-                , unode "ol" ! [("class","toc")] $ evalState (mapM (navPointNode navXhtmlFormatter) secs) 1]
-          ]
+  let navBlocks = [RawBlock (Format "html") $ ppElement $
+                   unode navtag ! [("epub:type","toc") | epub3] $
+                    [ unode "h1" ! [("id","toc-title")] $ plainTitle
+                    , unode "ol" ! [("class","toc")] $ evalState (mapM (navPointNode navXhtmlFormatter) secs) 1]]
+  let navData = renderHtml $ writeHtml opts'
+            (Pandoc (setMeta "title"
+                     (walk removeNote $ fromList $ docTitle' meta) nullMeta)
+               navBlocks)
   let navEntry = mkEntry "nav.xhtml" navData
 
   -- mimetype
@@ -765,23 +762,20 @@ metadataElement version md currentTime =
 showDateTimeISO8601 :: UTCTime -> String
 showDateTimeISO8601 = formatTime defaultTimeLocale "%FT%TZ"
 
-transformTag :: WriterOptions
-             -> IORef [(FilePath, FilePath)] -- ^ (oldpath, newpath) media
+transformTag :: IORef [(FilePath, FilePath)] -- ^ (oldpath, newpath) media
              -> Tag String
              -> IO (Tag String)
-transformTag opts mediaRef tag@(TagOpen name attr)
+transformTag mediaRef tag@(TagOpen name attr)
   | name `elem` ["video", "source", "img", "audio"] = do
   let src = fromAttrib "src" tag
   let poster = fromAttrib "poster" tag
-  let oldsrc = maybe src (</> src) $ writerSourceURL opts
-  let oldposter = maybe poster (</> poster) $ writerSourceURL opts
-  newsrc <- modifyMediaRef mediaRef oldsrc
-  newposter <- modifyMediaRef mediaRef oldposter
+  newsrc <- modifyMediaRef mediaRef src
+  newposter <- modifyMediaRef mediaRef poster
   let attr' = filter (\(x,_) -> x /= "src" && x /= "poster") attr ++
               [("src", newsrc) | not (null newsrc)] ++
               [("poster", newposter) | not (null newposter)]
   return $ TagOpen name attr'
-transformTag _ _ tag = return tag
+transformTag _ tag = return tag
 
 modifyMediaRef :: IORef [(FilePath, FilePath)] -> FilePath -> IO FilePath
 modifyMediaRef _ "" = return ""
@@ -791,7 +785,7 @@ modifyMediaRef mediaRef oldsrc = do
          Just n  -> return n
          Nothing -> do
            let new = "media/file" ++ show (length media) ++
-                    takeExtension oldsrc
+                    takeExtension (takeWhile (/='?') oldsrc) -- remove query
            modifyIORef mediaRef ( (oldsrc, new): )
            return new
 
@@ -799,10 +793,10 @@ transformBlock  :: WriterOptions
                 -> IORef [(FilePath, FilePath)] -- ^ (oldpath, newpath) media
                 -> Block
                 -> IO Block
-transformBlock opts mediaRef (RawBlock fmt raw)
+transformBlock _ mediaRef (RawBlock fmt raw)
   | fmt == Format "html" = do
   let tags = parseTags raw
-  tags' <- mapM (transformTag opts mediaRef)  tags
+  tags' <- mapM (transformTag mediaRef)  tags
   return $ RawBlock fmt (renderTags' tags')
 transformBlock _ _ b = return b
 
@@ -810,19 +804,17 @@ transformInline  :: WriterOptions
                  -> IORef [(FilePath, FilePath)] -- ^ (oldpath, newpath) media
                  -> Inline
                  -> IO Inline
-transformInline opts mediaRef (Image lab (src,tit)) = do
-    let src' = unEscapeString src
-    let oldsrc = maybe src' (</> src) $ writerSourceURL opts
-    newsrc <- modifyMediaRef mediaRef oldsrc
+transformInline _ mediaRef (Image lab (src,tit)) = do
+    newsrc <- modifyMediaRef mediaRef src
     return $ Image lab (newsrc, tit)
 transformInline opts _ (x@(Math _ _))
   | WebTeX _ <- writerHTMLMathMethod opts = do
     raw <- makeSelfContained opts $ writeHtmlInline opts x
     return $ RawInline (Format "html") raw
-transformInline opts mediaRef  (RawInline fmt raw)
+transformInline _ mediaRef  (RawInline fmt raw)
   | fmt == Format "html" = do
   let tags = parseTags raw
-  tags' <- mapM (transformTag opts mediaRef) tags
+  tags' <- mapM (transformTag mediaRef) tags
   return $ RawInline fmt (renderTags' tags')
 transformInline _ _ x = return x
 
@@ -1204,3 +1196,4 @@ docTitle' meta = fromMaybe [] $ go <$> lookupMeta "title" meta
                    _ -> []
         go (MetaList xs) = concatMap go xs
         go _ = []
+

@@ -42,6 +42,7 @@ import           Text.Pandoc.Parsing hiding ( F, unF, askF, asksF, runF
 import           Text.Pandoc.Readers.LaTeX (inlineCommand, rawLaTeXInline)
 import           Text.Pandoc.Shared (compactify', compactify'DL)
 import           Text.TeXMath (readTeX, writePandoc, DisplayType(..))
+import qualified Text.TeXMath.Readers.MathML.EntityMap as MathMLEntityMap
 
 import           Control.Applicative ( Applicative, pure
                                      , (<$>), (<$), (<*>), (<*), (*>) )
@@ -69,7 +70,32 @@ parseOrg = do
   blocks' <- parseBlocks
   st <- getState
   let meta = runF (orgStateMeta' st) st
-  return $ Pandoc meta $ filter (/= Null) (B.toList $ runF blocks' st)
+  let removeUnwantedBlocks = dropCommentTrees . filter (/= Null)
+  return $ Pandoc meta $ removeUnwantedBlocks (B.toList $ runF blocks' st)
+
+-- | Drop COMMENT headers and the document tree below those headers.
+dropCommentTrees :: [Block] -> [Block]
+dropCommentTrees [] = []
+dropCommentTrees blks@(b:bs) =
+  maybe blks (flip dropUntilHeaderAboveLevel bs) $ commentHeaderLevel b
+
+-- | Return the level of a header starting a comment tree and Nothing
+-- otherwise.
+commentHeaderLevel :: Block -> Maybe Int
+commentHeaderLevel blk =
+   case blk of
+     (Header level _ ((Str "COMMENT"):_)) -> Just level
+     _                                    -> Nothing
+
+-- | Drop blocks until a header on or above the given level is seen
+dropUntilHeaderAboveLevel :: Int -> [Block] -> [Block]
+dropUntilHeaderAboveLevel n = dropWhile (not . isHeaderLevelLowerEq n)
+
+isHeaderLevelLowerEq :: Int -> Block -> Bool
+isHeaderLevelLowerEq n blk =
+  case blk of
+    (Header level _ _) -> n >= level
+    _                  -> False
 
 --
 -- Parser State for Org
@@ -828,12 +854,14 @@ list :: OrgParser (F Blocks)
 list = choice [ definitionList, bulletList, orderedList ] <?> "list"
 
 definitionList :: OrgParser (F Blocks)
-definitionList = fmap B.definitionList . fmap compactify'DL . sequence
-                 <$> many1 (definitionListItem bulletListStart)
+definitionList = try $ do n <- lookAhead (bulletListStart' Nothing)
+                          fmap B.definitionList . fmap compactify'DL . sequence
+                            <$> many1 (definitionListItem $ bulletListStart' (Just n))
 
 bulletList :: OrgParser (F Blocks)
-bulletList = fmap B.bulletList . fmap compactify' . sequence
-             <$> many1 (listItem bulletListStart)
+bulletList = try $ do n <- lookAhead (bulletListStart' Nothing)
+                      fmap B.bulletList . fmap compactify' . sequence
+                        <$> many1 (listItem (bulletListStart' $ Just n))
 
 orderedList :: OrgParser (F Blocks)
 orderedList = fmap B.orderedList . fmap compactify' . sequence
@@ -845,10 +873,27 @@ genericListStart listMarker = try $
   (+) <$> (length <$> many spaceChar)
       <*> (length <$> listMarker <* many1 spaceChar)
 
--- parses bullet list start and returns its length (excl. following whitespace)
+-- parses bullet list marker. maybe we know the indent level
 bulletListStart :: OrgParser Int
-bulletListStart = genericListStart bulletListMarker
-  where bulletListMarker = pure <$> oneOf "*-+"
+bulletListStart = bulletListStart' Nothing
+
+bulletListStart' :: Maybe Int -> OrgParser Int
+-- returns length of bulletList prefix, inclusive of marker
+bulletListStart' Nothing  = do ind <- length <$> many spaceChar
+                               when (ind == 0) $ notFollowedBy (char '*')
+                               oneOf bullets
+                               many1 spaceChar
+                               return (ind + 1)
+ -- Unindented lists are legal, but they can't use '*' bullets
+ -- We return n to maintain compatibility with the generic listItem
+bulletListStart' (Just n) = do count (n-1) spaceChar
+                               when (n == 1) $ notFollowedBy (char '*')
+                               oneOf bullets
+                               many1 spaceChar
+                               return n
+
+bullets :: String
+bullets = "*+-"
 
 orderedListStart :: OrgParser Int
 orderedListStart = genericListStart orderedListMarker
@@ -927,7 +972,7 @@ parseInlines = trimInlinesF . mconcat <$> many1 inline
 
 -- treat these as potentially non-text when parsing inline:
 specialChars :: [Char]
-specialChars = "\"$'()*+-./:<=>[\\]^_{|}~"
+specialChars = "\"$'()*+-,./:<=>[\\]^_{|}~"
 
 
 whitespace :: OrgParser (F Inlines)
@@ -1054,7 +1099,7 @@ linkOrImage = explicitOrImageLink
 explicitOrImageLink :: OrgParser (F Inlines)
 explicitOrImageLink = try $ do
   char '['
-  srcF   <- applyCustomLinkFormat =<< linkTarget
+  srcF   <- applyCustomLinkFormat =<< possiblyEmptyLinkTarget
   title  <- enclosedRaw (char '[') (char ']')
   title' <- parseFromString (mconcat <$> many inline) title
   char ']'
@@ -1087,6 +1132,9 @@ selfTarget = try $ char '[' *> linkTarget <* char ']'
 linkTarget :: OrgParser String
 linkTarget = enclosedByPair '[' ']' (noneOf "\n\r[]")
 
+possiblyEmptyLinkTarget :: OrgParser String
+possiblyEmptyLinkTarget = try linkTarget <|> ("" <$ string "[]")
+
 applyCustomLinkFormat :: String -> OrgParser (F String)
 applyCustomLinkFormat link = do
   let (linkType, rest) = break (== ':') link
@@ -1094,26 +1142,32 @@ applyCustomLinkFormat link = do
     formatter <- M.lookup linkType <$> asksF orgStateLinkFormatters
     return $ maybe link ($ drop 1 rest) formatter
 
-
 linkToInlinesF :: String -> Inlines -> F Inlines
-linkToInlinesF s@('#':_) = pure . B.link s ""
-linkToInlinesF s
-    | isImageFilename s = const . pure $ B.image s "" ""
-    | isUri s           = pure . B.link s ""
-    | isRelativeUrl s   = pure . B.link s ""
-linkToInlinesF s = \title -> do
-  anchorB <- (s `elem`) <$> asksF orgStateAnchorIds
-  if anchorB
-    then pure $ B.link ('#':s) "" title
-    else pure $ B.emph title
+linkToInlinesF s =
+  case s of
+    ""      -> pure . B.link "" ""
+    ('#':_) -> pure . B.link s ""
+    _ | isImageFilename s     -> const . pure $ B.image s "" ""
+    _ | isUri s               -> pure . B.link s ""
+    _ | isRelativeFilePath s  -> pure . B.link s ""
+    _ | isAbsoluteFilePath s  -> pure . B.link ("file://" ++ s) ""
+    _ -> \title -> do
+           anchorB <- (s `elem`) <$> asksF orgStateAnchorIds
+           if anchorB
+             then pure $ B.link ('#':s) "" title
+             else pure $ B.emph title
 
-isRelativeUrl :: String -> Bool
-isRelativeUrl s = (':' `notElem` s) && ("./" `isPrefixOf` s)
+isRelativeFilePath :: String -> Bool
+isRelativeFilePath s = (("./" `isPrefixOf` s) || ("../" `isPrefixOf` s)) &&
+                       (':' `notElem` s)
 
 isUri :: String -> Bool
 isUri s = let (scheme, path) = break (== ':') s
           in all (\c -> isAlphaNum c || c `elem` ".-") scheme
              && not (null path)
+
+isAbsoluteFilePath :: String -> Bool
+isAbsoluteFilePath = ('/' ==) . head
 
 isImageFilename :: String -> Bool
 isImageFilename filename =
@@ -1205,10 +1259,10 @@ displayMath = return . B.displayMath <$> choice [ rawMathBetween "\\[" "\\]"
                                                 ]
 symbol :: OrgParser (F Inlines)
 symbol = return . B.str . (: "") <$> (oneOf specialChars >>= updatePositions)
- where updatePositions c
-           | c `elem` emphasisPreChars = c <$ updateLastPreCharPos
-           | c `elem` emphasisForbiddenBorderChars = c <$ updateLastForbiddenCharPos
-           | otherwise = return c
+ where updatePositions c = do
+         when (c `elem` emphasisPreChars) updateLastPreCharPos
+         when (c `elem` emphasisForbiddenBorderChars) updateLastForbiddenCharPos
+         return c
 
 emphasisBetween :: Char
                 -> OrgParser (F Inlines)
@@ -1387,13 +1441,19 @@ simpleSubOrSuperString = try $
 inlineLaTeX :: OrgParser (F Inlines)
 inlineLaTeX = try $ do
   cmd <- inlineLaTeXCommand
-  maybe mzero returnF $ parseAsMath cmd `mplus` parseAsInlineLaTeX cmd
+  maybe mzero returnF $
+     parseAsMath cmd `mplus` parseAsMathMLSym cmd `mplus` parseAsInlineLaTeX cmd
  where
    parseAsMath :: String -> Maybe Inlines
    parseAsMath cs = B.fromList <$> texMathToPandoc cs
 
    parseAsInlineLaTeX :: String -> Maybe Inlines
    parseAsInlineLaTeX cs = maybeRight $ runParser inlineCommand state "" cs
+
+   parseAsMathMLSym :: String -> Maybe Inlines
+   parseAsMathMLSym cs = B.str <$> MathMLEntityMap.getUnicode (clean cs)
+    -- dropWhileEnd would be nice here, but it's not available before base 4.5
+    where clean = reverse . dropWhile (`elem` "{}") . reverse . drop 1
 
    state :: ParserState
    state = def{ stateOptions = def{ readerParseRaw = True }}
